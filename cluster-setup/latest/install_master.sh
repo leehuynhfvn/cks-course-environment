@@ -1,4 +1,4 @@
-#!/bin/sh
+bin/sh/bin/sh
 
 # Source: http://kubernetes.io/docs/getting-started-guides/kubeadm
 
@@ -16,7 +16,14 @@ if [ "$DISTRIB_RELEASE" != "20.04" ]; then
     read
 fi
 
-KUBE_VERSION=1.31.1
+# Sử dụng từ khóa 'latest' để cài đặt phiên bản mới nhất
+KUBE_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt | cut -d'v' -f2)
+# Đảm bảo chỉ cài đặt phiên bản 1.32.x
+if [[ ! $KUBE_VERSION =~ ^1\.32\. ]]; then
+    # Nếu không có phiên bản 1.32 trong stable, sử dụng phiên bản 1.32 mới nhất
+    KUBE_VERSION=$(curl -L -s https://dl.k8s.io/release/stable-1.32.txt | cut -d'v' -f2)
+fi
+echo "Installing Kubernetes version: ${KUBE_VERSION}"
 
 # get platform
 PLATFORM=`uname -p`
@@ -74,26 +81,28 @@ EOF
 
 
 ### install packages
-apt-get install -y apt-transport-https ca-certificates
+apt-get install -y apt-transport-https ca-certificates curl apt-transport-https
 mkdir -p /etc/apt/keyrings
-rm /etc/apt/keyrings/kubernetes-1-31-apt-keyring.gpg || true
-rm /etc/apt/keyrings/kubernetes-1-30-apt-keyring.gpg || true
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-1-31-apt-keyring.gpg
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-1-30-apt-keyring.gpg
-echo > /etc/apt/sources.list.d/kubernetes.list
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-1-31-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /" | sudo tee -a /etc/apt/sources.list.d/kubernetes.list
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-1-30-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /" | sudo tee -a /etc/apt/sources.list.d/kubernetes.list
+rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg || true
+
+# Sử dụng repository mới của Kubernetes v1.32
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
 apt-get --allow-unauthenticated update
-apt-get --allow-unauthenticated install -y docker.io containerd kubelet=${KUBE_VERSION}-1.1 kubeadm=${KUBE_VERSION}-1.1 kubectl=${KUBE_VERSION}-1.1 kubernetes-cni
+apt-get --allow-unauthenticated install -y docker.io containerd kubelet kubeadm kubectl kubernetes-cni
 apt-mark hold kubelet kubeadm kubectl kubernetes-cni
 
 
-### install containerd 1.6 over apt-installed-version
-wget https://github.com/containerd/containerd/releases/download/v1.6.12/containerd-1.6.12-linux-${PLATFORM}.tar.gz
-tar xvf containerd-1.6.12-linux-${PLATFORM}.tar.gz
+### install containerd 
+# Lấy phiên bản containerd mới nhất
+CONTAINERD_VERSION=$(curl -s https://api.github.com/repos/containerd/containerd/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+echo "Installing containerd version: ${CONTAINERD_VERSION}"
+wget https://github.com/containerd/containerd/releases/download/${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION:1}-linux-${PLATFORM}.tar.gz
+tar xvf containerd-${CONTAINERD_VERSION:1}-linux-${PLATFORM}.tar.gz
 systemctl stop containerd
 mv bin/* /usr/bin
-rm -rf bin containerd-1.6.12-linux-${PLATFORM}.tar.gz
+rm -rf bin containerd-${CONTAINERD_VERSION:1}-linux-${PLATFORM}.tar.gz
 systemctl unmask containerd
 systemctl start containerd
 
@@ -178,17 +187,17 @@ systemctl enable kubelet && systemctl start kubelet
 
 ### init k8s
 rm /root/.kube/config || true
-kubeadm init --kubernetes-version=${KUBE_VERSION} --ignore-preflight-errors=NumCPU --skip-token-print --pod-network-cidr 192.168.0.0/16
+kubeadm init --kubernetes-version=v${KUBE_VERSION} --ignore-preflight-errors=NumCPU --skip-token-print --pod-network-cidr 192.168.0.0/16
 
 mkdir -p ~/.kube
 sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config
 
 ### CNI
-kubectl apply -f https://raw.githubusercontent.com/killer-sh/cks-course-environment/master/cluster-setup/calico.yaml
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/master/manifests/calico.yaml
 
 
 # etcdctl
-ETCDCTL_VERSION=v3.5.1
+ETCDCTL_VERSION=$(curl -s https://api.github.com/repos/etcd-io/etcd/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
 ETCDCTL_ARCH=$(dpkg --print-architecture)
 ETCDCTL_VERSION_FULL=etcd-${ETCDCTL_VERSION}-linux-${ETCDCTL_ARCH}
 wget https://github.com/etcd-io/etcd/releases/download/${ETCDCTL_VERSION}/${ETCDCTL_VERSION_FULL}.tar.gz
